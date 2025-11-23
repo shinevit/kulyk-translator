@@ -18,15 +18,67 @@
 #   docker run --rm --platform linux/arm64 -p 3000:3000 kulyk-rust:latest-arm64
 #
 # This produces a multi-arch manifest that can be pushed to a registry like GHCR.
-# For single-platform builds (e.g., `docker build -t kulyk-rust:latest .`), it
-# automatically detects the host architecture via `uname -m`.
+# The builder stage compiles the Rust application using cross-compilation toolchains
+# and selects the appropriate binary based on TARGETARCH.
 # ==============================================================================
 
 # ==============================================================================
-# Stage 1: Downloader
+# Stage 1: Builder
+# Compiles the Rust application for the target architecture.
+# ==============================================================================
+FROM --platform=$BUILDPLATFORM rust:1.91-slim-bookworm AS builder
+
+WORKDIR /usr/src/kulyk-rust
+
+# Install required build tools: clang, libclang-dev, and cross compilers
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    clang \
+    libclang-dev \
+    cmake \
+    make \
+    pkg-config \
+    gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+    gcc-x86-64-linux-gnu g++-x86-64-linux-gnu binutils-x86-64-linux-gnu \
+    && rm -rf /var/lib/apt/lists/*
+
+# Cache Cargo metadata
+COPY Cargo.toml Cargo.lock ./
+# Copy source code and UI file
+COPY src ./src
+COPY ui.html ./
+
+ARG TARGETARCH
+RUN rustup component add rustfmt;
+RUN set -eux; \
+    if [ "$TARGETARCH" = "arm64" ]; then \
+    rustup target add aarch64-unknown-linux-gnu; \
+    export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc; \
+    export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc; \
+    export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++; \
+    export CFLAGS_aarch64_unknown_linux_gnu="-march=armv8.2-a+fp16+dotprod"; \
+    export CXXFLAGS_aarch64_unknown_linux_gnu="-march=armv8.2-a+fp16+dotprod"; \
+    cargo build --release --no-default-features --target aarch64-unknown-linux-gnu; \
+    aarch64-linux-gnu-strip target/aarch64-unknown-linux-gnu/release/kulyk; \
+    cp target/aarch64-unknown-linux-gnu/release/kulyk /tmp/; \
+    rm -rf target; \
+    elif [ "$TARGETARCH" = "amd64" ]; then \
+    rustup target add x86_64-unknown-linux-gnu; \
+    export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc; \
+    export CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc; \
+    export CXX_x86_64_unknown_linux_gnu=x86_64-linux-gnu-g++; \
+    cargo build --release --no-default-features --target x86_64-unknown-linux-gnu; \
+    x86_64-linux-gnu-strip target/x86_64-unknown-linux-gnu/release/kulyk; \
+    cp target/x86_64-unknown-linux-gnu/release/kulyk /tmp/; \
+    rm -rf target; \
+    else \
+    echo "Unsupported architecture: $TARGETARCH" && exit 1; \
+    fi
+
+# ==============================================================================
+# Stage 2: Downloader
 # Downloads the GGUF models using temporary dependencies (wget, ca-certificates).
 # ==============================================================================
-FROM debian:bookworm-slim as downloader
+FROM debian:bookworm-slim AS downloader
 
 # Install temporary dependencies for downloading models.
 RUN apt-get update && apt-get install -y \
@@ -40,11 +92,11 @@ RUN mkdir -p /download/models && \
     wget -O /download/models/kulyk-en-uk.gguf "https://huggingface.co/mradermacher/kulyk-en-uk-GGUF/resolve/main/kulyk-en-uk.Q8_0.gguf"
 
 # ==============================================================================
-# Stage 2: Runner
+# Stage 3: Runner
 # Creates the final minimal image with runtime dependencies, models, and the
 # architecture-specific binary. Runs as non-root user for security.
 # ==============================================================================
-FROM debian:bookworm-slim as runner
+FROM debian:bookworm-slim AS runner
 
 # Add metadata labels for better image introspection.
 LABEL maintainer="egorsmkv"
@@ -68,26 +120,12 @@ RUN groupadd -g 1000 appuser && \
     useradd -u 1000 -g appuser -m -d /app appuser && \
     chown -R appuser:appuser /app
 
-# Copy pre-compiled binaries for both architectures into temporary locations.
-# These are selected based on the build-time architecture detection during the build.
-COPY ./dist/kulyk_x86_64-unknown-linux-gnu/kulyk /tmp/amd64/kulyk
-COPY ./dist/kulyk_aarch64-unknown-linux-gnu/kulyk /tmp/arm64/kulyk
+# Copy the compiled binary from the builder stage
+COPY --from=builder /tmp/kulyk /app/kulyk-translator
 
-# Select the appropriate binary based on the target architecture, set permissions,
-# and chown to non-root user. Uses `uname -m` for architecture detection, which
-# works in both multi-platform (Buildx) and single-platform builds.
-# Maps "x86_64" to amd64 binary and "aarch64" to arm64 binary.
-RUN arch=$(uname -m) && \
-    if [ "$arch" = "x86_64" ]; then \
-        cp /tmp/amd64/kulyk /app/kulyk-translator; \
-    elif [ "$arch" = "aarch64" ]; then \
-        cp /tmp/arm64/kulyk /app/kulyk-translator; \
-    else \
-        echo "Unsupported architecture: $arch" && exit 1; \
-    fi && \
-    chown appuser:appuser /app/kulyk-translator && \
-    chmod 755 /app/kulyk-translator && \
-    rm -rf /tmp/amd64 /tmp/arm64
+# Set permissions and ownership
+RUN chown appuser:appuser /app/kulyk-translator && \
+    chmod 755 /app/kulyk-translator
 
 # Switch to non-root user.
 USER appuser

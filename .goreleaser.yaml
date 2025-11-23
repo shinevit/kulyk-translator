@@ -1,10 +1,9 @@
 version: 2
 
-project_name: kulyk
+project_name: kulyk-translator
 
 before:
   hooks:
-    - rustup default stable
     - cargo fetch --locked
 
 env:
@@ -13,17 +12,53 @@ env:
 
 builds:
   - builder: rust
-    id: kulyk
+    id: kulyk-all
     command: build
-    tool: cross
+    tool: ./scripts/cross-build.sh
+    binary: kulyk
     targets:
       - x86_64-unknown-linux-gnu
+      - aarch64-unknown-linux-gnu
       - x86_64-apple-darwin
       - aarch64-apple-darwin
-      - aarch64-unknown-linux-gnu
+    hooks:
+      post:
+        - cmd: rm -rf target/{{ .Target }}/release || true
+        - cmd: rm -rf target/release || true
+          output: true
 
-universal_binaries:
-  - replace: false
+archives:
+  - id: kulyk-archives
+    ids: 
+      - kulyk-all
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- if eq .Os "darwin" }}darwin
+      {{- else }}{{ .Os }}{{ end }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "arm64" }}aarch64
+      {{- else }}{{ .Arch }}{{ end }}
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+checksum:
+  name_template: 'checksums.txt'
+
+changelog:
+  sort: desc
+  filters:
+    exclude:
+      - '(?i)^docs'
+      - '(?i)^tests'
+      - '(?i)^unit tests'
+
+release:
+  prerelease: auto
+  draft: true
+  mode: keep-existing
 
 source:
   enabled: false

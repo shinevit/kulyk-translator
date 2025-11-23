@@ -1,1 +1,32 @@
+# Exclude models directory (downloaded in downloader stage)
 models/
+
+# Exclude build artifacts
+target/
+.cargo/
+dist/
+
+# Exclude Git files
+.git/
+.gitignore
+
+# Exclude documentation
+*.md
+docs/
+
+# Exclude CI/CD files
+.github/
+
+# Exclude development files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Exclude Docker files
+dockerfiles/
+
+# Exclude GoReleaser files
+.goreleaser.yaml
+scripts/
