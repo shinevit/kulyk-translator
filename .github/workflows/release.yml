@@ -1,16 +1,19 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_run:
+    workflows: ["Release Docker Image"]
+    types:
+      - completed
 
 jobs:
   goreleaser:
+    # Only run if docker-build succeeded
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: macos-latest
     permissions:
       contents: write
-      packages: write
+      packages: read
     
     steps:
       - name: Checkout
@@ -26,6 +29,21 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Pull Docker image from GHCR
+        run: |
+          echo "Pulling Docker image from GHCR..."
+          docker pull ghcr.io/${{ github.repository }}:latest
+          docker tag ghcr.io/${{ github.repository }}:latest kulyk-builder:latest
+          docker rmi ghcr.io/${{ github.repository }}:latest
+          echo "Docker image ready for binary extraction"
+      
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
@@ -34,9 +52,11 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Use CI-specific build script
+          CI_BUILD: "true"
       
       - name: Cleanup Docker images
         if: always()
         run: |
-          # Remove the builder image to avoid pushing to registry
+          # Remove the builder image to free up space
           docker rmi kulyk-builder:latest || true

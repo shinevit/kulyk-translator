@@ -1,11 +1,8 @@
 #!/bin/bash
 set -e
 
-# If running in CI and CI_BUILD is set, delegate to the CI-specific script
-if [[ "${CI_BUILD:-}" == "true" ]] || [[ -n "${GITHUB_ACTIONS:-}" && -z "${ACT:-}" ]]; then
-    echo "Detected CI environment, using cross-build-ci.sh..."
-    exec "$(dirname "$0")/cross-build-ci.sh" "$@"
-fi
+# CI/CD-specific build script that pulls Docker image from GHCR instead of building locally
+# This script is used by GoReleaser in GitHub Actions
 
 # Function to extract target from arguments
 get_target() {
@@ -30,13 +27,27 @@ fi
 
 case "$TARGET" in
     x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu)
-        # Check if the multi-arch builder image already exists
-        if docker image inspect kulyk-builder:latest >/dev/null 2>&1; then
-            echo "Multi-arch builder image already exists, skipping build..."
-        else
-            echo "Building multi-arch image for Linux (x86_64 and ARM64)..."
-            # Build only the final runner stage to avoid including builder layers
-            docker buildx build --platform linux/amd64,linux/arm64 -t kulyk-builder:latest --load .
+        IMAGE_NAME="kulyk-builder:latest"
+        
+        # In CI, the image should already be pulled and tagged by the workflow
+        # Only pull if running locally and image doesn't exist
+        if ! docker image inspect "$IMAGE_NAME" > /dev/null 2>&1; then
+            if [[ -n "${CI:-}" || -n "${GITHUB_ACTIONS:-}" ]]; then
+                echo "Error: Image $IMAGE_NAME not found in CI environment"
+                echo "The workflow should have pulled and tagged it already"
+                exit 1
+            else
+                echo "Image not found locally, pulling from GHCR..."
+                GHCR_IMAGE="ghcr.io/egorsmkv/kulyk-rust:latest"
+                
+                if docker pull "$GHCR_IMAGE"; then
+                    echo "Successfully pulled $GHCR_IMAGE"
+                    docker tag "$GHCR_IMAGE" "$IMAGE_NAME"
+                else
+                    echo "Error: Failed to pull image from GHCR"
+                    exit 1
+                fi
+            fi
         fi
         
         if [[ "$TARGET" == "x86_64-unknown-linux-gnu" ]]; then
@@ -47,13 +58,12 @@ case "$TARGET" in
         
         echo "Extracting binary for $PLATFORM..."
         # Create a container to extract the binary
-        CONTAINER_ID=$(docker create --platform "$PLATFORM" kulyk-builder:latest)
+        CONTAINER_ID=$(docker create --platform "$PLATFORM" "$IMAGE_NAME")
         
         # Ensure target directory exists
         mkdir -p "target/$TARGET/release"
         
-        # Copy binary
-        # docker cp "$CONTAINER_ID":/tmp/kulyk "target/$TARGET/release/kulyk"
+        # Copy binary from the runner stage (final image)
         docker cp "$CONTAINER_ID":/app/kulyk-translator "target/$TARGET/release/kulyk"
         
         # Cleanup

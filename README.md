@@ -49,13 +49,17 @@ cargo build --release
 #### Build images
 
 ```shell
+# build a builder images
 just build_cross_images
+
+docker buildx build --platform linux/amd64,linux/arm64 -t kulyk-builder:latest --load .
 ```
 
 #### Build binaries
  
 ```shell
 cargo install cross --git https://github.com/cross-rs/cross
+
 goreleaser build --clean ---snapshot --id kulyk-all --timeout 60m --parallelism 1
 ```
 
